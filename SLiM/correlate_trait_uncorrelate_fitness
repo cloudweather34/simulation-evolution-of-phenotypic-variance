@@ -1,0 +1,194 @@
+// Keywords: QTL, quantitative trait loci, pleiotropy, M-matrix, live plotting, mutation()
+
+initialize() {
+	setwd(dir);
+//	setwd("/Volumes/Temp1/shengkai/evolVar_pleiotropy");
+	initializeMutationRate(0);
+	initializeMutationType("m2", 0.5, "f", 0.0);   // QTLs
+	m2.convertToSubstitution = F;
+	m2.color = "red";
+	
+	initializeGenomicElementType("g2", m2, 1.0);
+	
+	// 5k weakly linked loci
+	initializeGenomicElement(g2, 0, 4999);
+	defineConstant("r",1e-3);	
+	initializeRecombinationRate(r);
+	
+	// QTL-related constants used below
+//	defineConstant("N",6);
+//	defineConstant("n",3);
+//	defineConstant("cov1",0.1);
+//	defineConstant("cov2",0.5);
+//	defineConstant("cov",0.1);
+//	defineConstant("prop",0.5);	
+	defineConstant("QTL_mu", rep(0,N));
+	defineConstant("QTL_cov1", cov); 
+//	defineConstant("QTL_cov2", cov2); 
+	defineConstant("QTL_sigma", matrix(rep(QTL_cov1,N*N), nrow=N));
+	
+//	i = 0;
+//	while (i < N) {
+//	print(i:(i+n-1));
+//	QTL_sigma[i:(i+n-1),i:(i+n-1)] = cov2;
+//	i = i + n;
+//	}
+	
+	for (i in 1:N){
+		for (j in 1:N){
+			if (i==j) QTL_sigma[i-1,j-1] = 1.0;	
+		}
+	}	
+		
+	catn("\nQTL DFE means: ");
+	print(QTL_mu);
+	catn("\nQTL DFE variance-covariance matrix: ");
+	print(QTL_sigma);
+	
+	// find Rscript
+	if (fileExists("/usr/bin/Rscript"))
+		defineConstant("RSCRIPT", "/usr/bin/Rscript");
+	else if (fileExists("/usr/local/bin/Rscript"))
+		defineConstant("RSCRIPT", "/usr/local/bin/Rscript");
+	else
+		stop("Couldn't find Rscript.");
+}
+
+1 late() {
+	sim.addSubpop("p1", 10000);
+	p1.genomes.readFromMS("/Volumes/Temp1/shengkai/evolVar_pleiotropy/anc_MS_2.txt",m2);
+}
+
+mutation(m2) {
+	// draw mutational effects for the m2 mutations
+	effects = rmvnorm(1, QTL_mu, QTL_sigma);	
+	for (i in 0:(N-1)){
+	mut.setValue(paste0("e",i), effects[i]);
+	}	
+	
+	// remember all drawn effects, for our final output
+	old_effects = sim.getValue("all_effects");
+	sim.setValue("all_effects", rbind(old_effects, effects));
+	
+	return T;
+}
+
+1 late()  {
+	for (mut in unique(p1.genomes.mutations))
+	{
+		mut_idx=sample(c(0,1),1,replace=T,weights=c(1-prop,prop));
+		effects = rmvnorm(1, QTL_mu, QTL_sigma)*mut_idx;
+		for (i in 0:(N-1)){
+		mut.setValue(paste0("e",i), effects[i]);
+		}	
+	
+		// remember all drawn effects, for our final output
+		old_effects = sim.getValue("all_effects");
+		sim.setValue("all_effects", rbind(old_effects, effects));
+	}
+}
+
+1 late() {
+	p1.setSubpopulationSize(300);
+	for (ind in sim.subpopulations.individuals)
+	{
+		// construct phenotypes from additive effects of QTL mutations
+		muts = ind.genomes.mutationsOfType(m2);
+		for (i in 0:(N-1)){
+		phenotypeTmp = size(muts) ? sum(muts.getValue(paste0("e",i))) else 0.0;
+		ind.setValue(paste0("phenotype",i), phenotypeTmp);
+		}		
+	}
+	
+	inds = sim.subpopulations.individuals;
+	Anc_mean = mean(inds.getValue("phenotype0"));
+	Anc_sd = sd(inds.getValue("phenotype0"));
+	QTL_optima = Anc_mean[0] + 1.0*Anc_sd[0];	
+	for (i in 1:(N-1)){
+	Anc_mean = c(Anc_mean,mean(inds.getValue(paste0("phenotype",i))));
+	Anc_sd = c(Anc_sd,sd(inds.getValue(paste0("phenotype",i))));
+	QTL_optima = c(QTL_optima,Anc_mean[i] + 1.0*Anc_sd[i]);
+	}	
+
+	defineConstant("Anc_Mean",Anc_mean);	
+	defineConstant("Anc_Sd",Anc_sd);
+	defineConstant("QTL_Optima",QTL_optima);
+	
+	sim.setValue("history_p1", matrix(Anc_mean, nrow=1));
+	writeFile("./anc_mean.txt",paste(Anc_mean,sep="\n"));
+	writeFile("./anc_sd.txt",paste(Anc_sd,sep="\n"));
+}
+
+
+2 late() {
+	gen=sim.generation;
+	// get the QTL mutations and their starting frequencies
+	m2muts = sim.mutationsOfType(m2);
+	// get the effect sizes
+	
+	effectSize = paste(sim.mutationsOfType(m2),sep="\n");
+	for (i in 0:(N-1)){
+	effectSize = cbind(effectSize,paste(m2muts.getValue(paste0("e",i)),sep="\n"));	
+	}	
+	
+	writeFile("./mutation_effect.txt",effectSize);
+	
+	mut_freq_p1=sim.mutationFrequencies(p1, sim.mutationsOfType(m2));
+
+	writeFile("./freq/freq_p1_" + gen + ".txt",cbind(paste(sim.mutationsOfType(m2),sep="\n"),paste(mut_freq_p1,sep="\n")));
+}
+
+
+2:102 late() {
+	for (ind in sim.subpopulations.individuals)
+	{
+		// construct phenotypes from additive effects of QTL mutations
+		muts = ind.genomes.mutationsOfType(m2);
+		effect = 1;		
+		for (i in 0:(N-1)){
+		phenotypeTmp = size(muts) ? sum(muts.getValue(paste0("e",i))) else 0.0;
+		ind.setValue(paste0("phenotype",i), phenotypeTmp);
+		// calculate fitness effects
+		effectTmp = 0.5 + 0.6 * dnorm(QTL_Optima[i] - phenotypeTmp, 0.0, 3.6*Anc_Sd[i])/dnorm(0.0, 0.0, 3.6*Anc_Sd[i]);
+		effect = effect * effectTmp;
+		}		
+		ind.fitnessScaling = effect;
+	}
+}
+
+2:102 late() {
+	// output, run every 10 generations
+	if (sim.generation % 10 != 2)
+		return;
+	//write mutation frequency
+	gen=sim.generation;
+	mut_freq_p1=sim.mutationFrequencies(p1, sim.mutationsOfType(m2));
+	writeFile("./freq/freq_p1_" + gen + ".txt",cbind(paste(sim.mutationsOfType(m2),sep="\n"),paste(mut_freq_p1,sep="\n")));
+	
+	// print final phenotypes versus their optima
+	inds = sim.subpopulations.individuals;
+	catn("");
+	catn("Generation: " + sim.generation);
+
+	for (i in 0:(N-1)){
+	pheno = inds.getValue(paste0("phenotype",i))[0:299];
+	
+	pheno_mean = mean(pheno);
+	pheno_var = var(pheno);
+	
+	catn("Mean phenotype " + i + " in P1: " + pheno_mean + " (" + QTL_Optima[i] + ")");
+	catn("Var phenotype " + i + " in P1: " + pheno_var);
+	
+	history_p1 = sim.getValue(paste0("history_p1_p",i));
+	history_p1 = c(history_p1, pheno);
+	sim.setValue(paste0("history_p1_p",i), history_p1);	
+	}
+}
+
+102 late() { 
+	for (i in 0:(N-1)){
+	history_p1=sim.getValue(paste0("history_p1_p",i));
+	writeFile(paste0("./phenotype_p1_p",i, ".txt"),paste(history_p1,sep="\n"));
+	}
+}
+
